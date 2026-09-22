@@ -1,0 +1,101 @@
+import { openai } from "@ai-sdk/openai";
+import { streamText } from "ai";
+import {
+  getOrCreateDevUser,
+  getOrCreateConversation,
+} from "@/lib/database";
+import { db } from "@/prisma/db";
+import { getStructuredMemory } from "@/lib/structured-memory";
+
+export async function POST(request: Request) {
+  try {
+    const { messages } = await request.json();
+
+    const user = await getOrCreateDevUser();
+    const conversation = await getOrCreateConversation(user.id);
+    const structuredMemory = await getStructuredMemory();
+
+    const latestUserMessage = [...messages]
+      .reverse()
+      .find((message: any) => message.role === "user");
+
+    if (latestUserMessage) {
+      const textParts = latestUserMessage.parts
+        ?.filter((part: any) => part.type === "text")
+        .map((part: any) => part.text)
+        .join("");
+
+      if (textParts) {
+        await db.orm.public.Message.create({
+          role: "user",
+          content: textParts,
+          conversationId: conversation.id,
+        });
+      }
+    }
+
+    const storedMessages = await db.orm.public.Message
+      .select("role", "content", "createdAt")
+      .where({ conversationId: conversation.id })
+      .orderBy((message) => message.createdAt.asc())
+      .all();
+
+    const historyMessages = storedMessages.map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: message.content,
+    }));
+
+    const result = streamText({
+      model: openai("gpt-5.6"),
+
+      system: `
+You are Bryan's personal AI assistant.
+
+You communicate naturally in English and Arabic.
+
+This is a private personal assistant application with its own persistent database.
+
+The application stores conversation messages in its database and provides you with the stored conversation history. You should use that history to maintain continuity.
+
+Rules:
+- Respond in the same language as the user unless asked otherwise.
+- If the user mixes Arabic and English, respond naturally using the same mixture when appropriate.
+- Be concise, practical, direct and professional.
+- Do not sound robotic or overly formal.
+- Do not claim that this application cannot save or persist conversations.
+- Never claim to have taken an action unless the system actually performed it.
+
+Structured business memory:
+
+Businesses:
+${JSON.stringify(structuredMemory.businesses, null, 2)}
+
+Projects:
+${JSON.stringify(structuredMemory.projects, null, 2)}
+
+Use this structured memory when relevant. Do not invent relationships, projects, business details, or other facts that are not present in the supplied memory.
+      `,
+
+      messages: historyMessages,
+
+      onEnd: async ({ text }) => {
+        if (text) {
+          await db.orm.public.Message.create({
+            role: "assistant",
+            content: text,
+            conversationId: conversation.id,
+          });
+        }
+      },
+    });
+
+    return result.toUIMessageStreamResponse();
+  } catch (error) {
+    console.error("AI error:", error);
+
+    return Response.json(
+      { error: "Something went wrong while contacting the AI." },
+      { status: 500 }
+    );
+  }
+}

@@ -74,11 +74,11 @@ export default function Home() {
         <div className="mx-auto flex max-w-4xl items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold text-gray-900">
-              Bryan&apos;s AI Assistant
+              Masira
             </h1>
 
             <p className="text-sm text-gray-500">
-              Your personal AI assistant
+              Your personal AI assistant • English & Arabic
             </p>
           </div>
 

@@ -76,7 +76,7 @@ export async function POST(request: Request) {
     const result = streamText({
       model: openai("gpt-5.6"),
 
-      system: `You are Bryan's personal AI assistant.
+      system: `You are Masira, Bryan Ahmed's personal AI assistant.
 
 Rules:
 

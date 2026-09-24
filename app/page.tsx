@@ -4,14 +4,65 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useEffect, useState } from "react";
 
+type AuthUser = {
+  id: number;
+  email: string;
+  name: string | null;
+};
+
 export default function Home() {
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [conversationLoading, setConversationLoading] = useState(true);
   const [conversationError, setConversationError] = useState(false);
 
+  const [authLoading, setAuthLoading] = useState(true);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [email, setEmail] = useState("");
+  const [signInLoading, setSignInLoading] = useState(false);
+  const [signInSent, setSignInSent] = useState(false);
+  const [signInError, setSignInError] = useState("");
+
   useEffect(() => {
+    async function checkSession() {
+      try {
+        const response = await fetch("/api/auth/session", {
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          setUser(null);
+          return;
+        }
+
+        const data = await response.json();
+
+        if (data.authenticated && data.user) {
+          setUser(data.user);
+        } else {
+          setUser(null);
+        }
+      } catch (error) {
+        console.error("Session check error:", error);
+        setUser(null);
+      } finally {
+        setAuthLoading(false);
+      }
+    }
+
+    checkSession();
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setConversationLoading(false);
+      return;
+    }
+
     async function createNewConversation() {
+      setConversationLoading(true);
+      setConversationError(false);
+
       try {
         const response = await fetch("/api/conversations", {
           method: "POST",
@@ -33,7 +84,7 @@ export default function Home() {
     }
 
     createNewConversation();
-  }, []);
+  }, [user]);
 
   const { messages, sendMessage, status } = useChat({
     id: conversationId ? `conversation-${conversationId}` : "new",
@@ -52,20 +103,131 @@ export default function Home() {
     status === "streaming" ||
     conversationLoading;
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSignIn(e: React.FormEvent) {
     e.preventDefault();
 
-    if (!input.trim() || isLoading || !conversationId) {
+    if (!email.trim() || signInLoading) {
       return;
     }
 
-    const message = input.trim();
+    setSignInLoading(true);
+    setSignInError("");
+    setSignInSent(false);
 
-    setInput("");
+    try {
+      const response = await fetch("/api/auth/request-link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+        }),
+      });
 
-    await sendMessage({
-      text: message,
-    });
+      if (!response.ok) {
+        throw new Error("Unable to request sign-in link");
+      }
+
+      setSignInSent(true);
+    } catch (error) {
+      console.error("Sign-in request error:", error);
+      setSignInError(
+        "Unable to send the sign-in link. Please try again."
+      );
+    } finally {
+      setSignInLoading(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+      });
+    } finally {
+      setUser(null);
+      setConversationId(null);
+      setConversationError(false);
+      setConversationLoading(false);
+      setSignInSent(false);
+      setEmail("");
+    }
+  }
+
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <h1 className="text-xl font-semibold text-gray-900">Masira</h1>
+          <p className="mt-2 text-sm text-gray-500">
+            Checking your session...
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+        <div className="w-full max-w-md rounded-2xl border bg-white p-8 shadow-sm">
+          <div className="text-center">
+            <h1 className="text-2xl font-semibold text-gray-900">
+              Masira
+            </h1>
+
+            <p className="mt-2 text-sm text-gray-500">
+              Your personal AI assistant
+            </p>
+          </div>
+
+          <form onSubmit={handleSignIn} className="mt-8 space-y-4">
+            <div>
+              <label
+                htmlFor="email"
+                className="mb-2 block text-sm font-medium text-gray-700"
+              >
+                Email address
+              </label>
+
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                required
+                disabled={signInLoading}
+                className="w-full rounded-xl border bg-white px-4 py-3 outline-none focus:border-gray-400"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={signInLoading || !email.trim()}
+              className="w-full rounded-xl bg-black px-5 py-3 text-sm font-medium text-white disabled:opacity-40"
+            >
+              {signInLoading ? "Sending..." : "Send sign-in link"}
+            </button>
+          </form>
+
+          {signInSent && (
+            <div className="mt-5 rounded-xl bg-gray-50 p-4 text-center text-sm text-gray-700">
+              If that email is authorised, a sign-in link has been sent.
+              Check your inbox.
+            </div>
+          )}
+
+          {signInError && (
+            <div className="mt-5 rounded-xl bg-red-50 p-4 text-center text-sm text-red-700">
+              {signInError}
+            </div>
+          )}
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -82,14 +244,32 @@ export default function Home() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2 text-sm text-green-600">
-            <span className="h-2 w-2 rounded-full bg-green-500" />
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="text-sm font-medium text-gray-900">
+                {user.name || user.email}
+              </p>
 
-            {conversationError
-              ? "Offline"
-              : conversationLoading
-                ? "Starting..."
-                : "Online"}
+              <p className="text-xs text-gray-500">{user.email}</p>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-lg border px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              Log out
+            </button>
+
+            <div className="flex items-center gap-2 text-sm text-green-600">
+              <span className="h-2 w-2 rounded-full bg-green-500" />
+
+              {conversationError
+                ? "Offline"
+                : conversationLoading
+                  ? "Starting..."
+                  : "Online"}
+            </div>
           </div>
         </div>
       </header>
@@ -181,4 +361,20 @@ export default function Home() {
       </section>
     </main>
   );
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!input.trim() || isLoading || !conversationId) {
+      return;
+    }
+
+    const message = input.trim();
+
+    setInput("");
+
+    await sendMessage({
+      text: message,
+    });
+  }
 }

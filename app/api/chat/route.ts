@@ -1,36 +1,150 @@
 import { openai } from "@ai-sdk/openai";
 import { streamText } from "ai";
-import {
-  getOrCreateDevUser,
-  getConversationForUser,
-} from "@/lib/database";
+import { getAuthenticatedUser } from "@/lib/auth";
+import { rateLimit } from "@/lib/rate-limit";
+import { readJsonBody } from "@/lib/request-validation";
+import { getConversationForUser } from "@/lib/database";
 import { db } from "@/prisma/db";
 import { getStructuredMemory } from "@/lib/structured-memory";
+import { writeAuditLog } from "@/lib/audit";
+
+function extractText(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+
+  const item = message as Record<string, unknown>;
+
+  if (typeof item.content === "string") {
+    return item.content;
+  }
+
+  if (Array.isArray(item.parts)) {
+    return item.parts
+      .filter(
+        (part): part is { type: "text"; text: string } =>
+          Boolean(part) &&
+          typeof part === "object" &&
+          (part as Record<string, unknown>).type === "text" &&
+          typeof (part as Record<string, unknown>).text === "string"
+      )
+      .map((part) => part.text)
+      .join("");
+  }
+
+  return "";
+}
+
+function filterRelevantMemory(
+  memory: Awaited<ReturnType<typeof getStructuredMemory>>,
+  query: string
+) {
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((term) => term.replace(/[^\p{L}\p{N}@.-]/gu, ""))
+    .filter((term) => term.length >= 3);
+
+  if (terms.length === 0) {
+    return memory;
+  }
+
+  const matches = (value: unknown) => {
+    if (typeof value !== "string") {
+      return false;
+    }
+
+    const normalized = value.toLowerCase();
+
+    return terms.some((term) => normalized.includes(term));
+  };
+
+  const businesses = memory.businesses.filter((business) =>
+    Object.values(business).some(matches)
+  );
+
+  const projects = memory.projects.filter((project) =>
+    Object.values(project).some(matches)
+  );
+
+  const organisations = memory.organisations.filter((organisation) =>
+    Object.values(organisation).some(matches)
+  );
+
+  const people = memory.people.filter((person) =>
+    Object.values(person).some(matches)
+  );
+
+  const projectIds = new Set(projects.map((project) => project.id));
+  const personIds = new Set(people.map((person) => person.id));
+
+  const projectPeople = memory.projectPeople.filter(
+    (relationship) =>
+      projectIds.has(relationship.projectId) ||
+      personIds.has(relationship.personId)
+  );
+
+  return {
+    businesses,
+    projects,
+    organisations,
+    people,
+    projectPeople,
+  };
+}
 
 export async function POST(request: Request) {
   try {
-    const { messages, conversationId } = await request.json();
+    const user = await getAuthenticatedUser(request);
 
-    if (!conversationId) {
+    if (!user) {
       return Response.json(
-        { error: "conversationId is required." },
+        { error: "Authentication required." },
+        { status: 401 }
+      );
+    }
+
+    if (!rateLimit(`chat:${user.id}`, 20, 60_000)) {
+      return Response.json(
+        { error: "Too many requests. Please try again later." },
+        { status: 429 }
+      );
+    }
+
+    const body = await readJsonBody(request);
+
+    if (!body || typeof body !== "object") {
+      return Response.json(
+        { error: "Invalid request body." },
         { status: 400 }
       );
     }
 
-    const numericConversationId = Number(conversationId);
+    const candidate = body as Record<string, unknown>;
+    const conversationId = Number(candidate.conversationId);
+    const messages = Array.isArray(candidate.messages)
+      ? candidate.messages
+      : [];
 
-    if (!Number.isInteger(numericConversationId)) {
+    if (
+      !Number.isInteger(conversationId) ||
+      conversationId <= 0
+    ) {
       return Response.json(
         { error: "Invalid conversationId." },
         { status: 400 }
       );
     }
 
-    const user = await getOrCreateDevUser();
+    if (messages.length === 0 || messages.length > 50) {
+      return Response.json(
+        { error: "Invalid message count." },
+        { status: 400 }
+      );
+    }
 
     const conversation = await getConversationForUser(
-      numericConversationId,
+      conversationId,
       user.id
     );
 
@@ -41,26 +155,36 @@ export async function POST(request: Request) {
       );
     }
 
-    const structuredMemory = await getStructuredMemory();
-
     const latestUserMessage = [...messages]
       .reverse()
-      .find((message: any) => message.role === "user");
+      .find(
+        (message) =>
+          Boolean(message) &&
+          typeof message === "object" &&
+          (message as Record<string, unknown>).role === "user"
+      );
 
-    if (latestUserMessage) {
-      const textParts = latestUserMessage.parts
-        ?.filter((part: any) => part.type === "text")
-        .map((part: any) => part.text)
-        .join("");
+    const latestUserText = extractText(latestUserMessage);
 
-      if (textParts) {
-        await db.orm.public.Message.create({
-          role: "user",
-          content: textParts,
-          conversationId: conversation.id,
-        });
-      }
+    if (!latestUserText) {
+      return Response.json(
+        { error: "A user message is required." },
+        { status: 400 }
+      );
     }
+
+    if (latestUserText.length > 20_000) {
+      return Response.json(
+        { error: "Message is too long." },
+        { status: 400 }
+      );
+    }
+
+    await db.orm.public.Message.create({
+      role: "user",
+      content: latestUserText,
+      conversationId: conversation.id,
+    });
 
     const storedMessages = await db.orm.public.Message
       .select("role", "content", "createdAt")
@@ -72,6 +196,20 @@ export async function POST(request: Request) {
       role: message.role as "user" | "assistant",
       content: message.content,
     }));
+
+    const structuredMemory = await getStructuredMemory();
+    const relevantMemory = filterRelevantMemory(
+      structuredMemory,
+      latestUserText
+    );
+
+    await writeAuditLog({
+      userId: user.id,
+      event: "conversation_created",
+      metadata: {
+        conversationId: conversation.id,
+      },
+    });
 
     const result = streamText({
       model: openai("gpt-5.6"),
@@ -92,19 +230,19 @@ Structured memory authority: The supplied structured database memory is authorit
 Structured business memory:
 
 Businesses:
-${JSON.stringify(structuredMemory.businesses, null, 2)}
+${JSON.stringify(relevantMemory.businesses, null, 2)}
 
 Projects:
-${JSON.stringify(structuredMemory.projects, null, 2)}
+${JSON.stringify(relevantMemory.projects, null, 2)}
 
 Organisations:
-${JSON.stringify(structuredMemory.organisations, null, 2)}
+${JSON.stringify(relevantMemory.organisations, null, 2)}
 
 People:
-${JSON.stringify(structuredMemory.people, null, 2)}
+${JSON.stringify(relevantMemory.people, null, 2)}
 
 Project-Person relationships:
-${JSON.stringify(structuredMemory.projectPeople, null, 2)}
+${JSON.stringify(relevantMemory.projectPeople, null, 2)}
 
 Relationship rules:
 
@@ -126,6 +264,14 @@ Use this structured memory when relevant. Do not invent relationships, projects,
             role: "assistant",
             content: text,
             conversationId: conversation.id,
+          });
+
+          await writeAuditLog({
+            userId: user.id,
+            event: "ai_response_created",
+            metadata: {
+              conversationId: conversation.id,
+            },
           });
         }
       },

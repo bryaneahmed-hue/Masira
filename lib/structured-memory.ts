@@ -42,10 +42,7 @@ export async function getStructuredMemory() {
       "id",
       "name",
       "title",
-      "email",
-      "phone",
       "role",
-      "notes",
       "organisationId"
     )
     .all();
@@ -55,8 +52,7 @@ export async function getStructuredMemory() {
       "id",
       "projectId",
       "personId",
-      "role",
-      "notes"
+      "role"
     )
     .all();
 

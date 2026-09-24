@@ -1,11 +1,16 @@
 import { db } from "@/prisma/db";
 
-const DEV_USER_EMAIL = "bryan@personal-ai.local";
+export async function getOrCreateOwnerUser() {
+  const email = process.env.OWNER_EMAIL?.trim().toLowerCase();
 
-export async function getOrCreateDevUser() {
+  if (!email) {
+    throw new Error("OWNER_EMAIL is not configured.");
+  }
+
   const existingUsers = await db.orm.public.User
     .select("id", "email", "name")
-    .where({ email: DEV_USER_EMAIL })
+    .where({ email })
+    .limit(1)
     .all();
 
   if (existingUsers.length > 0) {
@@ -13,26 +18,8 @@ export async function getOrCreateDevUser() {
   }
 
   return db.orm.public.User.create({
-    email: DEV_USER_EMAIL,
+    email,
     name: "Bryan",
-  });
-}
-
-export async function getOrCreateConversation(userId: number) {
-  const conversations = await db.orm.public.Conversation
-    .select("id", "title", "createdAt", "updatedAt")
-    .where({ userId })
-    .orderBy((c) => c.updatedAt.desc())
-    .limit(1)
-    .all();
-
-  if (conversations.length > 0) {
-    return conversations[0];
-  }
-
-  return db.orm.public.Conversation.create({
-    userId,
-    title: "Personal Assistant",
   });
 }
 

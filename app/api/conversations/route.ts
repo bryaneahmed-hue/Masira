@@ -1,16 +1,30 @@
-import {
-  createConversation,
-  getOrCreateDevUser,
-} from "@/lib/database";
+import { getAuthenticatedUser } from "@/lib/auth";
+import { createConversation } from "@/lib/database";
+import { writeAuditLog } from "@/lib/audit";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
-    const user = await getOrCreateDevUser();
+    const user = await getAuthenticatedUser(request);
+
+    if (!user) {
+      return Response.json(
+        { error: "Authentication required." },
+        { status: 401 }
+      );
+    }
 
     const conversation = await createConversation(
       user.id,
       "New Conversation"
     );
+
+    await writeAuditLog({
+      userId: user.id,
+      event: "conversation_created",
+      metadata: {
+        conversationId: conversation.id,
+      },
+    });
 
     return Response.json({
       id: conversation.id,

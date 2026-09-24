@@ -1,13 +1,13 @@
 import {
-  getOrCreateDevUser,
-  getOrCreateConversation,
+  getOrCreateOwnerUser,
+  createConversation,
 } from "./lib/database";
 import { db } from "./prisma/db";
 
 async function main() {
-  const user = await getOrCreateDevUser();
+  const user = await getOrCreateOwnerUser();
 
-  const conversation = await getOrCreateConversation(user.id);
+  const conversation = await createConversation(user.id);
 
   const message = await db.orm.public.Message.create({
     role: "user",

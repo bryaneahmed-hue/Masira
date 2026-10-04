@@ -7,6 +7,7 @@ export type AuditEvent =
   | "session_created"
   | "session_revoked"
   | "conversation_created"
+  | "message_received"
   | "ai_response_created";
 
 export async function writeAuditLog({

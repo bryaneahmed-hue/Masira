@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { db } from "@/prisma/db";
 
-const SESSION_COOKIE = "masira_session";
+export const SESSION_COOKIE = "masira_session";
 const SESSION_DAYS = 30;
 
 export function getOwnerEmail(): string {

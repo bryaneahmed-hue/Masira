@@ -111,7 +111,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await readJsonBody(request);
+    let body: unknown;
+
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      body = null;
+    }
 
     if (!body || typeof body !== "object") {
       return Response.json(
@@ -205,7 +211,7 @@ export async function POST(request: Request) {
 
     await writeAuditLog({
       userId: user.id,
-      event: "conversation_created",
+      event: "message_received",
       metadata: {
         conversationId: conversation.id,
       },

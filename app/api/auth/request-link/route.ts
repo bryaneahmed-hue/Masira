@@ -18,6 +18,8 @@ export async function POST(request: Request) {
     );
   }
 
+  let stage = "read_request";
+
   try {
     const body = await request.json();
     const email =
@@ -50,6 +52,8 @@ export async function POST(request: Request) {
       });
     }
 
+    stage = "database";
+
     const existingUsers = await db.orm.public.User
       .select("id", "email", "name")
       .where({ email: ownerEmail })
@@ -77,6 +81,8 @@ export async function POST(request: Request) {
       expiresAt: expiresAt.toISOString(),
     });
 
+    stage = "configuration";
+
     const appUrl = process.env.APP_URL?.trim();
 
     if (!appUrl) {
@@ -93,6 +99,8 @@ export async function POST(request: Request) {
     if (!resendApiKey || !from) {
       throw new Error("Email authentication is not configured.");
     }
+
+    stage = "email_provider";
 
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -132,7 +140,7 @@ export async function POST(request: Request) {
     console.error("Magic-link request error:", error);
 
     return Response.json(
-      { error: "Unable to process the sign-in request." },
+      { error: "Unable to process the sign-in request.", stage },
       { status: 500 }
     );
   }

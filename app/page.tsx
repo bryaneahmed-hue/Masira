@@ -125,8 +125,20 @@ export default function Home() {
         }),
       });
 
+      if (response.status === 429) {
+        setSignInError(
+          "Too many sign-in attempts. Please wait 15 minutes and try again."
+        );
+        return;
+      }
+
       if (!response.ok) {
-        throw new Error("Unable to request sign-in link");
+        const data = await response.json().catch(() => null);
+        const stage = typeof data?.stage === "string" ? data.stage : "unknown";
+        setSignInError(
+          `Unable to send the sign-in link (failed at: ${stage}, status ${response.status}).`
+        );
+        return;
       }
 
       setSignInSent(true);
